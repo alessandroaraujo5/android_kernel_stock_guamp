@@ -15,8 +15,8 @@ DATE="$(date +%Y%m%d%H%M)"
 KERNEL_NAME_T="derivativeTS-${DATE}.zip"
 KERNEL_NAME_R="derivativeRS-${DATE}.zip"
 
-CONFIG_PATH="arch/arm64/configs"
-DEFCONFIG="guamp_defconfig"
+CONFIG_PATH="arch/arm64/configs/vendor"
+DEFCONFIG="vendor/sunburn-guamp_defconfig"
 ORIGINAL="${CONFIG_PATH}/${DEFCONFIG}"
 BACKUP="${CONFIG_PATH}/${DEFCONFIG}.bak"
 
