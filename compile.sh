@@ -1,87 +1,121 @@
 #!/bin/bash
+SECONDS=0
 set -e
 
-# ================= CONFIG =================
-DEVICE="$1"
-UPLD=1
-UPLD_PROV="https://oshi.at"
+# ================= PATHS =================
+KERNEL_PATH="out/arch/arm64/boot"
+OBJ="${KERNEL_PATH}/Image"
+GZIP="${KERNEL_PATH}/Image.gz"
+CAT="${KERNEL_PATH}/Image.gz-dtb"
+DTB="${KERNEL_PATH}/dtb.img"
+DTBO="${KERNEL_PATH}/dtbo.img"
 
-if [ -z "$DEVICE" ]; then
-    echo "Uso: ./build.sh <device>"
-    exit 1
-fi
+# ================= META =================
+DATE="$(date +%Y%m%d%H%M)"
+KERNEL_NAME_T="derivativeTS-${DATE}.zip"
+KERNEL_NAME_R="derivativeRS-${DATE}.zip"
 
-# ================= DEPENDÊNCIAS =================
-sudo apt-get update
-sudo apt-get install -y ccache zip curl git
-
-# ================= TOOLCHAIN =================
-mkdir -p clang
-curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz \
-| tar -xz -C clang
-
-git clone --depth=1 -b android11-release \
-https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-binutils
-
-git clone --depth=1 -b android11-release \
-https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-binutils-32
-
-# ================= ANYKERNEL =================
-git clone --depth=1 https://github.com/100Daisy/AnyKernel3 -b master
+CONFIG_PATH="arch/arm64/configs"
+DEFCONFIG="guamp_defconfig"
+ORIGINAL="${CONFIG_PATH}/${DEFCONFIG}"
+BACKUP="${CONFIG_PATH}/${DEFCONFIG}.bak"
 
 # ================= ENV =================
-export PATH="$PWD/clang/bin:$PWD/binutils/bin:$PWD/binutils-32/bin:$PATH"
+export USE_CCACHE=1
+export KBUILD_BUILD_HOST=builder
+export KBUILD_BUILD_USER=khayloaf
 
-# ================= BUILD =================
-rm -rf out
-mkdir out
+# ================= FUNCTIONS =================
+KERNELSU_SETUP() {
+    if [ ! -d KernelSU ]; then
+        echo "➡️ Aplicando KernelSU Next"
+        curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh | bash -s legacy
+    fi
+}
 
-make vendor/sunburn-"$DEVICE"_defconfig ARCH=arm64 O=out CC=clang
+CLANG_SETUP() {
+    if [ ! -d clang ]; then
+        mkdir -p clang
+        wget -q https://github.com/Impqxr/aosp_clang_ci/releases/download/13289611/clang-13289611-linux-x86.tar.xz -O clang.tar.xz
+        tar -xf clang.tar.xz -C clang
+        mv clang/clang-*/* clang
+        rm -rf clang.tar.xz clang/clang-*
+    fi
+    export PATH="$PWD/clang/bin:$PATH"
+}
 
-make -j"$(nproc --all)" \
-    O=out \
-    ARCH=arm64 \
-    CC=clang \
-    HOSTCC=clang \
-    CLANG_TRIPLE=aarch64-linux-gnu- \
-    CROSS_COMPILE=aarch64-linux-android- \
-    CROSS_COMPILE_ARM32=arm-linux-androideabi-
+BUILD_KERNEL() {
+    rm -rf out && mkdir out
 
-# ================= PACKAGE =================
-IMG="out/arch/arm64/boot/Image.gz-dtb"
+    git restore drivers/Makefile drivers/Kconfig || true
+    rm -rf KernelSU drivers/kernelsu
 
-if [ ! -f "$IMG" ]; then
-    echo "❌ Kernel não foi gerado"
-    exit 1
-fi
+    KERNELSU_SETUP
+    CLANG_SETUP
 
-cp "$IMG" AnyKernel3/
-cd AnyKernel3
+    make O=out ARCH=arm64 "$DEFCONFIG"
 
-BUILD_TIME=$(date +"%d%m%Y-%H%M")
-KERNEL_NAME="SunBurn-$DEVICE-$BUILD_TIME"
-zip -r9 "$KERNEL_NAME.zip" ./*
+    make -j"$(nproc)" \
+        O=out ARCH=arm64 \
+        CC=clang LD=ld.lld \
+        AR=llvm-ar NM=llvm-nm \
+        OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+        STRIP=llvm-strip \
+        CROSS_COMPILE=aarch64-linux-gnu- \
+        CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+        LLVM=1 LLVM_IAS=1
+}
 
-cd ..
+PACKAGE_KERNEL() {
+    ZIP_NAME="$1"
 
-KERN_FINAL="AnyKernel3/$KERNEL_NAME.zip"
-echo "✅ Kernel gerado: $KERN_FINAL"
+    for f in "$OBJ" "$CAT" "$DTB" "$DTBO"; do
+        [ -f "$f" ] || { echo "❌ Build incompleto"; exit 1; }
+    done
 
-# ================= UPLOAD (ANTI-TRAVAMENTO) =================
-upload() {
+    rm -rf anykernel
+    git clone --depth=1 https://github.com/kylieeXD/AK3-Surya.git -b master anykernel
+
+    cp "$OBJ" "$CAT" anykernel/kernels/
+
+    cd anykernel
+    zip -r9 "../$ZIP_NAME" .
+    cd ..
+}
+
+UPLOAD() {
     FILE="$1"
-    URL="$2"
+    echo "➡️ Uploading $FILE"
 
-    echo "➡️ Enviando para $URL"
     curl --fail --progress-bar \
         --connect-timeout 10 \
         --max-time 300 \
-        -T "$FILE" "$URL" || \
-        echo "⚠️ Upload falhou em $URL"
+        -F "file=@$FILE" \
+        https://store1.gofile.io/contents/uploadfile \
+    || curl --fail --progress-bar \
+        --connect-timeout 10 \
+        --max-time 300 \
+        -F "file=@$FILE" \
+        https://store2.gofile.io/contents/uploadfile \
+    || echo "⚠️ Upload falhou"
 }
 
-if [ "$UPLD" = 1 ]; then
-    upload "$KERN_FINAL" "$UPLD_PROV"
-fi
+# ================= MAIN =================
+rm -f compile.log
+
+(
+    BUILD_KERNEL
+    PACKAGE_KERNEL "$KERNEL_NAME_T"
+    UPLOAD "$KERNEL_NAME_T"
+
+    cp "$ORIGINAL" "$BACKUP"
+    sed -i 's/^CONFIG_CAMERA_BOOTCLOCK_TIMESTAMP=.*/# CONFIG_CAMERA_BOOTCLOCK_TIMESTAMP is not set/' "$ORIGINAL"
+
+    BUILD_KERNEL
+    PACKAGE_KERNEL "$KERNEL_NAME_R"
+    UPLOAD "$KERNEL_NAME_R"
+
+    mv "$BACKUP" "$ORIGINAL"
+) | tee compile.log
+
+echo -e "\n✅ Completed in $((SECONDS / 60))m $((SECONDS % 60))s\n"
