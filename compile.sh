@@ -29,7 +29,7 @@ https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-
 binutils-32
 
 # ================= ANYKERNEL =================
-git clone --depth=1 https://github.com/100Daisy/AnyKernel3 -b "sunburn-$DEVICE"
+git clone --depth=1 https://github.com/100Daisy/AnyKernel3 -b sunburn-$1
 
 # ================= ENV =================
 export PATH="$PWD/clang/bin:$PWD/binutils/bin:$PWD/binutils-32/bin:$PATH"
