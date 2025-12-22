@@ -1,32 +1,54 @@
-#!/bin/sh
+#!/bin/bash
+set -e
 
-# Option on whether to upload the produced build to a file hosting service [Useful for CI builds]
+# ================= CONFIG =================
+DEVICE="$1"
 UPLD=1
-	if [ $UPLD = 1 ]; then
-		UPLD_PROV="https://oshi.at"
-        UPLD_PROV2="https://transfer.sh"
-	fi
 
-sudo apt-get install ccache
+if [ -z "$DEVICE" ]; then
+    echo "Uso: ./build.sh <device>"
+    exit 1
+fi
 
-# Clone toolchain from its repository
-mkdir clang && curl -Lsq https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz -o - | tar -xzf - -C clang
-git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android11-release binutils
-git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android11-release binutils-32
+UPLD_PROV="https://oshi.at"
+UPLD_PROV2="https://transfer.sh"
 
-# Clone AnyKernel3
-git clone --depth=1 https://github.com/100Daisy/AnyKernel3 -b sunburn-$1
+# ================= DEPENDÊNCIAS =================
+sudo apt-get update
+sudo apt-get install -y \
+    bc bison flex \
+    build-essential \
+    libssl-dev libelf-dev \
+    ccache zip curl git
 
-# Export the PATH variable
-export PATH="$(pwd)/clang/bin:$(pwd)/binutils/bin:$(pwd)/binutils-32/bin:$PATH"
+# ================= TOOLCHAIN =================
+mkdir -p clang
+curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz \
+| tar -xz -C clang
 
-# Clean up out
-find out -delete
+git clone --depth=1 -b android11-release \
+https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+binutils
+
+git clone --depth=1 -b android11-release \
+https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+binutils-32
+
+# ================= ANYKERNEL =================
+git clone --depth=1 https://github.com/100Daisy/AnyKernel3 -b "sunburn-$DEVICE"
+
+# ================= ENV =================
+export PATH="$PWD/clang/bin:$PWD/binutils/bin:$PWD/binutils-32/bin:$PATH"
+export CCACHE_EXEC=$(which ccache)
+export USE_CCACHE=1
+
+# ================= BUILD =================
+rm -rf out
 mkdir out
 
-# Compile the kernel
-build_clang() {
-    make -j$(nproc --all) \
+make vendor/sunburn-"$DEVICE"_defconfig O=out ARCH=arm64
+
+make -j"$(nproc)" \
     O=out \
     ARCH=arm64 \
     CC=clang \
@@ -34,35 +56,29 @@ build_clang() {
     CLANG_TRIPLE=aarch64-linux-gnu- \
     CROSS_COMPILE=aarch64-linux-android- \
     CROSS_COMPILE_ARM32=arm-linux-androideabi-
-}
 
-make vendor/sunburn-$1_defconfig ARCH=arm64 O=out CC=clang
-build_clang
+# ================= PACKAGE =================
+IMG="out/arch/arm64/boot/Image.gz-dtb"
 
-# Zip up the kernel
-zip_kernelimage() {
-    rm -rf AnyKernel3/Image.gz-dtb
-    cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3
-    rm -rf AnyKernel3/*.zip
-    BUILD_TIME=$(date +"%d%m%Y-%H%M")
-    cd AnyKernel3
-    KERNEL_NAME=SunBurn-$1-"${BUILD_TIME}"
-    zip -r9 "$KERNEL_NAME".zip ./*
-    cd ..
-}
-
-FILE="$(pwd)/out/arch/arm64/boot/Image.gz-dtb"
-if [ -f "$FILE" ]; then
-    zip_kernelimage $1
-    KERN_FINAL="$(pwd)/AnyKernel3/"$KERNEL_NAME".zip"
-    echo "The kernel has successfully been compiled and can be found in $KERN_FINAL"
-    if [ "$UPLD" = 1 ]; then
-        for i in "$UPLD_PROV" "$UPLD_PROV2"; do
-            curl --connect-timeout 5 -T "$KERN_FINAL" "$i"
-            echo " "
-        done
-    fi
-else
-    echo "The kernel has failed to compile. Please check the terminal output for further details."
+if [ ! -f "$IMG" ]; then
+    echo "❌ Build falhou"
     exit 1
 fi
+
+cp "$IMG" AnyKernel3/
+cd AnyKernel3
+
+BUILD_TIME=$(date +"%d%m%Y-%H%M")
+KERNEL_NAME="SunBurn-$DEVICE-$BUILD_TIME"
+zip -r9 "$KERNEL_NAME.zip" ./*
+
+cd ..
+
+# ================= UPLOAD =================
+if [ "$UPLD" = 1 ]; then
+    curl -T "AnyKernel3/$KERNEL_NAME.zip" "$UPLD_PROV"
+    echo
+    curl -T "AnyKernel3/$KERNEL_NAME.zip" "$UPLD_PROV2"
+fi
+
+echo "✅ Kernel gerado: AnyKernel3/$KERNEL_NAME.zip"
