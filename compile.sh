@@ -4,22 +4,16 @@ set -e
 # ================= CONFIG =================
 DEVICE="$1"
 UPLD=1
+UPLD_PROV="https://oshi.at"
 
 if [ -z "$DEVICE" ]; then
     echo "Uso: ./build.sh <device>"
     exit 1
 fi
 
-UPLD_PROV="https://oshi.at"
-UPLD_PROV2="https://transfer.sh"
-
 # ================= DEPENDÊNCIAS =================
 sudo apt-get update
-sudo apt-get install -y \
-    bc bison flex \
-    build-essential \
-    libssl-dev libelf-dev \
-    ccache zip curl git
+sudo apt-get install -y ccache zip curl git
 
 # ================= TOOLCHAIN =================
 mkdir -p clang
@@ -39,16 +33,14 @@ git clone --depth=1 https://github.com/100Daisy/AnyKernel3 -b "sunburn-$DEVICE"
 
 # ================= ENV =================
 export PATH="$PWD/clang/bin:$PWD/binutils/bin:$PWD/binutils-32/bin:$PATH"
-export CCACHE_EXEC=$(which ccache)
-export USE_CCACHE=1
 
 # ================= BUILD =================
 rm -rf out
 mkdir out
 
-make vendor/sunburn-"$DEVICE"_defconfig O=out ARCH=arm64
+make vendor/sunburn-"$DEVICE"_defconfig ARCH=arm64 O=out CC=clang
 
-make -j"$(nproc)" \
+make -j"$(nproc --all)" \
     O=out \
     ARCH=arm64 \
     CC=clang \
@@ -61,7 +53,7 @@ make -j"$(nproc)" \
 IMG="out/arch/arm64/boot/Image.gz-dtb"
 
 if [ ! -f "$IMG" ]; then
-    echo "❌ Build falhou"
+    echo "❌ Kernel não foi gerado"
     exit 1
 fi
 
@@ -74,11 +66,22 @@ zip -r9 "$KERNEL_NAME.zip" ./*
 
 cd ..
 
-# ================= UPLOAD =================
-if [ "$UPLD" = 1 ]; then
-    curl -T "AnyKernel3/$KERNEL_NAME.zip" "$UPLD_PROV"
-    echo
-    curl -T "AnyKernel3/$KERNEL_NAME.zip" "$UPLD_PROV2"
-fi
+KERN_FINAL="AnyKernel3/$KERNEL_NAME.zip"
+echo "✅ Kernel gerado: $KERN_FINAL"
 
-echo "✅ Kernel gerado: AnyKernel3/$KERNEL_NAME.zip"
+# ================= UPLOAD (ANTI-TRAVAMENTO) =================
+upload() {
+    FILE="$1"
+    URL="$2"
+
+    echo "➡️ Enviando para $URL"
+    curl --fail --progress-bar \
+        --connect-timeout 10 \
+        --max-time 300 \
+        -T "$FILE" "$URL" || \
+        echo "⚠️ Upload falhou em $URL"
+}
+
+if [ "$UPLD" = 1 ]; then
+    upload "$KERN_FINAL" "$UPLD_PROV"
+fi
